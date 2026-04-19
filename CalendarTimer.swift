@@ -227,8 +227,9 @@ class ResizeGrip: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let s = ds, let f = fa else { return }
         let c = NSEvent.mouseLocation
-        let nw = max(260, f.width + (c.x - s.x))
-        let nh = max(110, f.height - (c.y - s.y))
+        let nw = max(260, min(380, f.width + (c.x - s.x)))
+        var nh = max(110, min(380, f.height - (c.y - s.y)))
+        nh = min(nh, nw)  // cap aspect ratio at 1:1 (never taller than wide)
         window?.setFrame(NSRect(x: f.origin.x, y: f.maxY - nh, width: nw, height: nh), display: true)
     }
     override func mouseUp(with event: NSEvent) { ds = nil; fa = nil }
@@ -402,7 +403,7 @@ class MarkDoneVC: NSViewController, NSTextFieldDelegate {
 
 // MARK: - App delegate
 
-class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     var window: OverlayPanel!
     var glass: GlassView!
     var content: ContentHostView!
@@ -422,6 +423,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var settingsPopover: NSPopover?
     var markDonePopover: NSPopover?
     var hovering = false
+    var showingDone = false
 
     var store = EKEventStore()
     var ticker: Timer?
@@ -464,6 +466,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.minSize = NSSize(width: 260, height: 110)
+        window.maxSize = NSSize(width: 380, height: 380)
+        window.delegate = self
 
         let cv = window.contentView!
 
@@ -559,9 +563,89 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         content.addSubview(resizeGrip)
 
         window.makeKeyAndOrderFront(nil)
+        relayout()
         tick()
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
     }
+
+    // MARK: Scaling layout
+
+    func relayout() {
+        guard let cv = window?.contentView else { return }
+        let W = cv.bounds.width
+        let H = cv.bounds.height
+        let s = max(0.85, min(1.6, min(W / 300.0, H / 130.0)))
+
+        let hPad: CGFloat = 18
+        let chipSize: CGFloat = 20 * s
+        let gap: CGFloat = 4 * s
+        let cr = chipSize / 2
+
+        // Header
+        let headerH: CGFloat = 20 * s
+        let topPad: CGFloat  = 12 * s
+        let headerY = H - topPad - headerH
+
+        closeBtn.frame = NSRect(x: W - hPad - chipSize, y: headerY, width: chipSize, height: chipSize)
+        closeBtn.layer?.cornerRadius = cr
+        gearBtn.frame  = NSRect(x: W - hPad - chipSize*2 - gap, y: headerY, width: chipSize, height: chipSize)
+        gearBtn.layer?.cornerRadius = cr
+        doneBtn.frame  = NSRect(x: W - hPad - chipSize*3 - gap*2, y: headerY, width: chipSize, height: chipSize)
+        doneBtn.layer?.cornerRadius = cr
+
+        let dotSize: CGFloat = 6 * s
+        dotView.frame = NSRect(x: hPad, y: headerY + (headerH - dotSize)/2,
+                               width: dotSize, height: dotSize)
+
+        let titleX = hPad + dotSize + 8 * s
+        let titleRightX = doneBtn.frame.minX - 6 * s
+        titleLabel.frame = NSRect(x: titleX, y: headerY,
+                                  width: max(0, titleRightX - titleX), height: headerH)
+        titleLabel.font = NSFont.systemFont(ofSize: 11 * s, weight: .semibold)
+
+        // Footer + progress
+        let footerH: CGFloat = 14 * s
+        let footerY: CGFloat = 14 * s
+        footerLeft.font  = NSFont.systemFont(ofSize: 11 * s, weight: .regular)
+        footerRight.font = NSFont.systemFont(ofSize: 11 * s, weight: .regular)
+        footerLeft.frame  = NSRect(x: hPad,   y: footerY, width: W/2 - hPad, height: footerH)
+        footerRight.frame = NSRect(x: W/2,    y: footerY, width: W/2 - hPad, height: footerH)
+
+        let progressH: CGFloat = 5 * s
+        let progressY = footerY + footerH + 6 * s
+        progressBar.frame = NSRect(x: hPad, y: progressY,
+                                   width: W - hPad*2, height: progressH)
+
+        // Digit — centered between header and progress
+        let digitSize: CGFloat = 40 * s
+        let digitH = digitSize * 1.3
+        let availTop = headerY - 6 * s
+        let availBot = progressY + progressH + 4 * s
+        let digitY = availBot + max(0, (availTop - availBot - digitH) / 2)
+        let leftW: CGFloat = 30 * s
+
+        if showingDone {
+            digitLabel.font = NSFont.systemFont(ofSize: digitSize, weight: .semibold)
+            digitLabel.alignment = .center
+            digitLabel.frame = NSRect(x: hPad, y: digitY, width: W - hPad*2, height: digitH)
+            leftLabel.isHidden = true
+        } else {
+            digitLabel.font = NSFont.monospacedDigitSystemFont(ofSize: digitSize, weight: .semibold)
+            digitLabel.alignment = .left
+            digitLabel.frame = NSRect(x: hPad, y: digitY,
+                                      width: W - hPad*2 - leftW - 4, height: digitH)
+            leftLabel.isHidden = false
+        }
+        leftLabel.font = NSFont.systemFont(ofSize: 12 * s, weight: .medium)
+        leftLabel.frame = NSRect(x: W - hPad - leftW, y: digitY + digitH * 0.25,
+                                 width: leftW, height: 16 * s)
+
+        let gripSize: CGFloat = 18 * s
+        resizeGrip.frame = NSRect(x: W - gripSize, y: 0, width: gripSize, height: gripSize)
+        resizeGrip.needsDisplay = true
+    }
+
+    func windowDidResize(_ notification: Notification) { relayout() }
 
     func lbl(size: CGFloat, weight: NSFont.Weight, color: NSColor) -> PassthroughLabel {
         let t = PassthroughLabel(labelWithString: "")
@@ -697,20 +781,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                             calendars: nil)
         let events = store.events(matching: pred)
         let urgency = Settings.shared.urgencyEnabled
+        let maxDur: TimeInterval = 10 * 3600
 
         let prevHadEvent = currentEvent != nil
-        if let ev = events.filter({ $0.startDate <= now && $0.endDate > now })
-                          .sorted(by: { $0.endDate < $1.endDate }).first {
+        let active = events.filter {
+            $0.startDate <= now && $0.endDate > now &&
+            $0.endDate.timeIntervalSince($0.startDate) <= maxDur
+        }.sorted(by: { $0.endDate < $1.endDate })
+
+        if let ev = active.first {
+            if showingDone { showingDone = false; relayout() }
             currentEvent = ev
             let remaining = ev.endDate.timeIntervalSince(now)
             let total     = ev.endDate.timeIntervalSince(ev.startDate)
             let frac      = total > 0 ? max(0, min(1, remaining / total)) : 0
             let color     = urgencyColor(frac: frac, enabled: urgency)
 
+            dotView.isHidden = false
+            progressBar.isHidden = false
             dotView.color = color
             titleLabel.stringValue = ev.title ?? "Untitled"
             digitLabel.stringValue = fmt(Int(remaining))
             digitLabel.textColor   = .white
+            leftLabel.stringValue  = "left"
             progressBar.fraction   = CGFloat(frac)
             progressBar.barColor   = color
 
@@ -724,28 +817,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 glass.stopPulse()
             }
 
-        } else if let nxt = events.filter({ $0.startDate > now })
-                                  .sorted(by: { $0.startDate < $1.startDate }).first {
-            currentEvent = nil
-            let wait = nxt.startDate.timeIntervalSince(now)
-            dotView.color = NSColor(white: 1, alpha: 0.35)
-            titleLabel.stringValue = "Next: \(nxt.title ?? "Untitled")"
-            digitLabel.stringValue = fmt(Int(wait))
-            digitLabel.textColor   = NSColor(white: 1, alpha: 0.45)
-            progressBar.fraction   = 0
-            progressBar.barColor   = urgencyColor(frac: 1.0, enabled: urgency)
-            let tf = DateFormatter(); tf.dateFormat = "h:mm a"
-            footerLeft.stringValue  = "starts \(tf.string(from: nxt.startDate))"
-            footerRight.stringValue = "--"
-            glass.stopPulse()
-
         } else {
+            if !showingDone { showingDone = true; relayout() }
             currentEvent = nil
-            dotView.color = NSColor(white: 1, alpha: 0.25)
-            titleLabel.stringValue  = "No upcoming events"
-            digitLabel.stringValue  = "--:--:--"
-            digitLabel.textColor    = NSColor(white: 1, alpha: 0.35)
-            progressBar.fraction    = 0
+            dotView.isHidden = true
+            progressBar.isHidden = true
+            titleLabel.stringValue  = ""
+            digitLabel.stringValue  = "Done!"
+            digitLabel.textColor    = NSColor(white: 1, alpha: 0.92)
+            leftLabel.stringValue   = ""
             footerLeft.stringValue  = ""
             footerRight.stringValue = ""
             glass.stopPulse()
