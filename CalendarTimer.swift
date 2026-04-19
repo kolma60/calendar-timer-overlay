@@ -1,18 +1,37 @@
 import Cocoa
 import EventKit
 
-// MARK: - Urgency colors (matching design: oklch green → amber → coral)
+// MARK: - Settings
 
-func urgencyColor(frac: Double) -> NSColor {
+class Settings {
+    static let shared = Settings()
+    var bgOpacity: CGFloat = 0.94
+    var urgencyEnabled: Bool = true
+}
+
+// MARK: - Colors
+
+let neutralAccent = NSColor(white: 1.0, alpha: 0.55)
+
+func urgencyColor(frac: Double, enabled: Bool) -> NSColor {
+    if !enabled { return neutralAccent }
     if frac > 0.25 { return NSColor(red: 0.25, green: 0.75, blue: 0.46, alpha: 1) }
     if frac > 0.10 { return NSColor(red: 0.88, green: 0.72, blue: 0.16, alpha: 1) }
     return NSColor(red: 0.87, green: 0.36, blue: 0.25, alpha: 1)
 }
 
-// MARK: - Dot indicator (colored circle with glow)
+// MARK: - Passthrough label (doesn't intercept mouse — drag works over text)
+
+class PassthroughLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+// MARK: - Dot indicator
 
 class DotView: NSView {
-    var color: NSColor = NSColor(red: 0.25, green: 0.75, blue: 0.46, alpha: 1) { didSet { needsDisplay = true } }
+    var color: NSColor = NSColor(red: 0.25, green: 0.75, blue: 0.46, alpha: 1) {
+        didSet { needsDisplay = true }
+    }
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.saveGState()
@@ -21,21 +40,21 @@ class DotView: NSView {
         color.setFill(); p.fill()
         ctx.restoreGState()
     }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-// MARK: - Progress bar (groove + colored fill)
+// MARK: - Progress bar
 
 class ProgressBarView: NSView {
     var fraction: CGFloat = 1.0 { didSet { needsDisplay = true } }
-    var barColor: NSColor = NSColor(red: 0.25, green: 0.75, blue: 0.46, alpha: 1) { didSet { needsDisplay = true } }
-
+    var barColor: NSColor = NSColor(red: 0.25, green: 0.75, blue: 0.46, alpha: 1) {
+        didSet { needsDisplay = true }
+    }
     override func draw(_ dirtyRect: NSRect) {
         let r = bounds.height / 2
-        // Groove
         let track = NSBezierPath(roundedRect: bounds, xRadius: r, yRadius: r)
         NSColor(white: 1, alpha: 0.14).setFill(); track.fill()
         NSColor(white: 0, alpha: 0.18).setStroke(); track.lineWidth = 0.5; track.stroke()
-        // Fill
         let fw = max(0, bounds.width * fraction)
         if fw > 0 {
             let fillPath = NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: fw, height: bounds.height),
@@ -43,9 +62,10 @@ class ProgressBarView: NSView {
             barColor.setFill(); fillPath.fill()
         }
     }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-// MARK: - Round icon button (glass chip style)
+// MARK: - Round glass chip button
 
 class ChipButton: NSButton {
     override init(frame: NSRect) {
@@ -72,56 +92,81 @@ class ChipButton: NSButton {
     }
 }
 
-// MARK: - Glass background (blur + specular + chroma + edge)
+// MARK: - Glass background (rendering + pulse ring)
 
 class GlassView: NSVisualEffectView {
     private let cr: CGFloat = 20
-    var onHoverChange: ((Bool) -> Void)?
-    private var dragOrigin: NSPoint?
-    private var winOrigin: NSPoint?
+    private let pulseLayer = CAShapeLayer()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         material = .hudWindow; blendingMode = .behindWindow; state = .active
         wantsLayer = true
-        layer?.cornerRadius = cr; layer?.cornerCurve = .continuous; layer?.masksToBounds = true
+        layer?.cornerRadius  = cr
+        layer?.cornerCurve   = .continuous
+        layer?.masksToBounds = true
+
+        pulseLayer.fillColor = NSColor.clear.cgColor
+        pulseLayer.lineWidth = 2.5
+        pulseLayer.opacity = 0
+        layer?.addSublayer(pulseLayer)
+        updatePulsePath()
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        addTrackingArea(NSTrackingArea(rect: .zero,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self, userInfo: nil))
+    override func layout() { super.layout(); updatePulsePath() }
+    override func setFrameSize(_ s: NSSize) { super.setFrameSize(s); updatePulsePath() }
+
+    private func updatePulsePath() {
+        pulseLayer.frame = bounds
+        pulseLayer.path = CGPath(roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5),
+                                 cornerWidth: cr - 1.5, cornerHeight: cr - 1.5,
+                                 transform: nil)
+    }
+
+    func startPulse(color: NSColor) {
+        pulseLayer.strokeColor = color.cgColor
+        if pulseLayer.animation(forKey: "pulse-opacity") != nil { return }
+        let op = CABasicAnimation(keyPath: "opacity")
+        op.fromValue = 0.25; op.toValue = 0.95
+        op.duration = 0.85; op.autoreverses = true; op.repeatCount = .infinity
+        op.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        pulseLayer.add(op, forKey: "pulse-opacity")
+
+        let lw = CABasicAnimation(keyPath: "lineWidth")
+        lw.fromValue = 1.5; lw.toValue = 3.5
+        lw.duration = 0.85; lw.autoreverses = true; lw.repeatCount = .infinity
+        lw.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        pulseLayer.add(lw, forKey: "pulse-width")
+    }
+
+    func stopPulse() {
+        pulseLayer.removeAllAnimations()
+        pulseLayer.opacity = 0
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
                                 xRadius: cr - 0.5, yRadius: cr - 0.5)
         ctx.saveGState(); path.addClip()
 
-        // Glass base: white gradient overlay
         NSGradient(colors: [
             NSColor(white: 1, alpha: 0.22),
             NSColor(white: 1, alpha: 0.06),
             NSColor(white: 1, alpha: 0.12),
         ], atLocations: [0, 0.55, 1], colorSpace: .genericRGB)!.draw(in: bounds, angle: 90)
 
-        // Specular: top-left radial highlight
         let specPt = CGPoint(x: bounds.width * 0.30, y: bounds.height * 1.05)
-        let cspace = CGColorSpaceCreateDeviceRGB()
-        let specColors = [NSColor(white: 1, alpha: 0.38).cgColor,
-                          NSColor(white: 1, alpha: 0.00).cgColor] as CFArray
-        let locs: [CGFloat] = [0, 1]
-        if let grad = CGGradient(colorsSpace: cspace, colors: specColors, locations: locs) {
-            ctx.drawRadialGradient(grad, startCenter: specPt, startRadius: 0,
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let sc = [NSColor(white: 1, alpha: 0.38).cgColor,
+                  NSColor(white: 1, alpha: 0.00).cgColor] as CFArray
+        if let g = CGGradient(colorsSpace: cs, colors: sc, locations: [0, 1]) {
+            ctx.drawRadialGradient(g, startCenter: specPt, startRadius: 0,
                                    endCenter: specPt, endRadius: bounds.width * 0.72, options: [])
         }
 
-        // Chromatic aberration: subtle pink-to-teal tint
         NSGradient(colors: [
             NSColor(red: 1.0, green: 0.71, blue: 0.86, alpha: 0.10),
             NSColor(red: 0.71, green: 0.86, blue: 1.00, alpha: 0.00),
@@ -129,17 +174,29 @@ class GlassView: NSVisualEffectView {
         ], atLocations: [0, 0.40, 1], colorSpace: .genericRGB)!.draw(in: bounds, angle: -60)
 
         ctx.restoreGState()
-
-        // Rim border
         path.lineWidth = 1.0
         NSColor(white: 1, alpha: 0.22).setStroke(); path.stroke()
     }
 
-    // Hover
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }  // clicks pass through
+}
+
+// MARK: - Content host (drag + hover)
+
+class ContentHostView: NSView {
+    var onHoverChange: ((Bool) -> Void)?
+    private var dragOrigin: NSPoint?
+    private var winOrigin: NSPoint?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        addTrackingArea(NSTrackingArea(rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
     override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
     override func mouseExited(with event: NSEvent)  { onHoverChange?(false) }
 
-    // Drag to move
     override func mouseDown(with event: NSEvent) {
         dragOrigin = NSEvent.mouseLocation; winOrigin = window?.frame.origin
     }
@@ -157,7 +214,6 @@ class ResizeGrip: NSView {
     private var ds: NSPoint?; private var fa: NSRect?
     override func draw(_ dirtyRect: NSRect) {
         let p = NSBezierPath()
-        // Lines anchored to bottom-right corner (correct resize-grip orientation)
         for i in 1...3 {
             let d = CGFloat(i) * 4.5
             p.move(to: NSPoint(x: bounds.width - 2, y: d))
@@ -185,28 +241,191 @@ class OverlayPanel: NSPanel {
     override var canBecomeMain: Bool { true }
 }
 
+// MARK: - Settings popover VC
+
+class SettingsVC: NSViewController {
+    var onOpacityChange: ((CGFloat) -> Void)?
+    var onUrgencyToggle: ((Bool) -> Void)?
+
+    override func loadView() {
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 140))
+
+        let title = NSTextField(labelWithString: "Timer settings")
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.frame = NSRect(x: 16, y: 108, width: 228, height: 20)
+        v.addSubview(title)
+
+        let opLbl = NSTextField(labelWithString: "Background opacity")
+        opLbl.font = .systemFont(ofSize: 11, weight: .medium)
+        opLbl.textColor = .secondaryLabelColor
+        opLbl.frame = NSRect(x: 16, y: 82, width: 228, height: 14)
+        v.addSubview(opLbl)
+
+        let slider = NSSlider(value: Double(Settings.shared.bgOpacity),
+                              minValue: 0.3, maxValue: 1.0,
+                              target: self, action: #selector(sliderChanged(_:)))
+        slider.isContinuous = true
+        slider.frame = NSRect(x: 16, y: 56, width: 228, height: 22)
+        v.addSubview(slider)
+
+        let toggleLbl = NSTextField(labelWithString: "Urgency colors & pulse")
+        toggleLbl.font = .systemFont(ofSize: 12, weight: .regular)
+        toggleLbl.frame = NSRect(x: 16, y: 20, width: 170, height: 18)
+        v.addSubview(toggleLbl)
+
+        let sw = NSSwitch()
+        sw.state = Settings.shared.urgencyEnabled ? .on : .off
+        sw.target = self; sw.action = #selector(toggleChanged(_:))
+        sw.frame = NSRect(x: 200, y: 16, width: 44, height: 24)
+        v.addSubview(sw)
+
+        self.view = v
+    }
+
+    @objc func sliderChanged(_ sender: NSSlider) {
+        let x = CGFloat(sender.doubleValue)
+        Settings.shared.bgOpacity = x
+        onOpacityChange?(x)
+    }
+
+    @objc func toggleChanged(_ sender: NSSwitch) {
+        let on = sender.state == .on
+        Settings.shared.urgencyEnabled = on
+        onUrgencyToggle?(on)
+    }
+}
+
+// MARK: - Mark-Done popover VC
+
+class MarkDoneVC: NSViewController, NSTextFieldDelegate {
+    var eventTitle: String = ""
+    var remainingSeconds: TimeInterval = 0
+    var onStartNewTask: ((String) -> Void)?
+    var onJustEnd: (() -> Void)?
+    var onCancel: (() -> Void)?
+
+    private var nameField: NSTextField!
+    private var startBtn: NSButton!
+
+    override func loadView() {
+        let forceNew = remainingSeconds > 300
+        let w: CGFloat = 340
+        let h: CGFloat = 184
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+
+        let titleL = NSTextField(labelWithString: "Mark as done")
+        titleL.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleL.frame = NSRect(x: 16, y: h - 30, width: w - 32, height: 18)
+        v.addSubview(titleL)
+
+        let subL = NSTextField(labelWithString: "\(eventTitle) — \(fmtDur(remainingSeconds)) left")
+        subL.font = .systemFont(ofSize: 11)
+        subL.textColor = .secondaryLabelColor
+        subL.lineBreakMode = .byTruncatingTail
+        subL.frame = NSRect(x: 16, y: h - 50, width: w - 32, height: 16)
+        v.addSubview(subL)
+
+        let prompt = NSTextField(labelWithString:
+            forceNew ? "Next task name (required — more than 5 min left)"
+                     : "Next task name")
+        prompt.font = .systemFont(ofSize: 11, weight: .medium)
+        prompt.textColor = .secondaryLabelColor
+        prompt.frame = NSRect(x: 16, y: h - 80, width: w - 32, height: 14)
+        v.addSubview(prompt)
+
+        nameField = NSTextField(frame: NSRect(x: 16, y: h - 112, width: w - 32, height: 24))
+        nameField.placeholderString = "What's next?"
+        nameField.font = .systemFont(ofSize: 13)
+        nameField.delegate = self
+        nameField.target = self
+        nameField.action = #selector(startFromField)
+        v.addSubview(nameField)
+
+        // Buttons row
+        let cancelBtn = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        cancelBtn.bezelStyle = .rounded
+        cancelBtn.keyEquivalent = "\u{1b}"
+        cancelBtn.frame = NSRect(x: 16, y: 16, width: 76, height: 28)
+        v.addSubview(cancelBtn)
+
+        var rightX = w - 16
+
+        startBtn = NSButton(title: "Start next task", target: self, action: #selector(startNext))
+        startBtn.bezelStyle = .rounded
+        startBtn.keyEquivalent = "\r"
+        startBtn.isEnabled = false
+        let startW: CGFloat = 132
+        rightX -= startW
+        startBtn.frame = NSRect(x: rightX, y: 16, width: startW, height: 28)
+        v.addSubview(startBtn)
+
+        if !forceNew {
+            let just = NSButton(title: "Just end", target: self, action: #selector(justEnd))
+            just.bezelStyle = .rounded
+            let jw: CGFloat = 80
+            rightX -= (jw + 6)
+            just.frame = NSRect(x: rightX, y: 16, width: jw, height: 28)
+            v.addSubview(just)
+        }
+
+        self.view = v
+
+        DispatchQueue.main.async { [weak self] in
+            self?.nameField.becomeFirstResponder()
+        }
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        let s = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        startBtn.isEnabled = !s.isEmpty
+    }
+
+    @objc func startFromField() { startNext() }
+
+    @objc func startNext() {
+        let s = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return }
+        onStartNewTask?(s)
+    }
+
+    @objc func justEnd() { onJustEnd?() }
+    @objc func cancel() { onCancel?() }
+
+    private func fmtDur(_ s: TimeInterval) -> String {
+        let i = max(0, Int(s))
+        let h = i / 3600, m = (i % 3600) / 60, sec = i % 60
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, sec)
+            : String(format: "%d:%02d", m, sec)
+    }
+}
+
 // MARK: - App delegate
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var window: OverlayPanel!
     var glass: GlassView!
+    var content: ContentHostView!
 
-    // Subviews
     var dotView: DotView!
-    var titleLabel: NSTextField!
-    var digitLabel: NSTextField!
-    var leftLabel: NSTextField!
+    var titleLabel: PassthroughLabel!
+    var digitLabel: PassthroughLabel!
+    var leftLabel: PassthroughLabel!
     var progressBar: ProgressBarView!
-    var footerLeft: NSTextField!
-    var footerRight: NSTextField!
-    var closeBtn: NSButton!
-    var gearBtn: NSButton!
+    var footerLeft: PassthroughLabel!
+    var footerRight: PassthroughLabel!
+    var closeBtn: ChipButton!
+    var gearBtn: ChipButton!
+    var doneBtn: ChipButton!
     var resizeGrip: ResizeGrip!
-    var pulseTimer: Timer?
-    var pulsing = false
+
+    var settingsPopover: NSPopover?
+    var markDonePopover: NSPopover?
+    var hovering = false
 
     var store = EKEventStore()
     var ticker: Timer?
+    var currentEvent: EKEvent?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         if #available(macOS 14, *) {
@@ -227,7 +446,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         a.runModal(); NSApp.terminate(nil)
     }
 
-    // MARK: Build window
+    // MARK: Build
 
     func build() {
         let screen = NSScreen.main!.frame
@@ -242,50 +461,59 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
-        window.alphaValue = 0.94
+        window.isReleasedWhenClosed = false
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.minSize = NSSize(width: 260, height: 110)
 
         let cv = window.contentView!
 
+        // ── Layer 1: glass (background only, opacity-controllable) ──
         glass = GlassView(frame: cv.bounds)
         glass.autoresizingMask = [.width, .height]
-        glass.onHoverChange = { [weak self] h in
-            guard let self else { return }
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.15
-                self.closeBtn.animator().alphaValue   = h ? 1 : 0
-                self.gearBtn.animator().alphaValue    = h ? 1 : 0
-                self.resizeGrip.animator().alphaValue = h ? 1 : 0
-            }
-        }
+        glass.alphaValue = Settings.shared.bgOpacity
         cv.addSubview(glass)
 
-        let hPad: CGFloat = 18
+        // ── Layer 2: content host (all text/buttons, always opaque) ──
+        content = ContentHostView(frame: cv.bounds)
+        content.autoresizingMask = [.width, .height]
+        content.wantsLayer = true
+        content.layer?.backgroundColor = NSColor.clear.cgColor
+        content.onHoverChange = { [weak self] h in
+            self?.hovering = h
+            self?.updateChromeVisibility()
+        }
+        cv.addSubview(content)
 
-        // ── Header row (top) ──────────────────────────────────────────────
-        // y positions are from bottom (AppKit coords)
-        let headerY: CGFloat = H - 12 - 20   // = 98
+        let hPad: CGFloat = 18
+        let headerY: CGFloat = H - 12 - 20
 
         dotView = DotView(frame: NSRect(x: hPad, y: headerY + 7, width: 6, height: 6))
         dotView.autoresizingMask = [.minYMargin]
-        glass.addSubview(dotView)
+        content.addSubview(dotView)
 
         titleLabel = lbl(size: 11, weight: .semibold, color: NSColor(white: 1, alpha: 0.92))
-        titleLabel.frame = NSRect(x: hPad + 14, y: headerY, width: W - hPad * 2 - 54, height: 20)
+        titleLabel.frame = NSRect(x: hPad + 14, y: headerY, width: W - hPad * 2 - 78, height: 20)
         titleLabel.autoresizingMask = [.width, .minYMargin]
-        glass.addSubview(titleLabel)
+        content.addSubview(titleLabel)
 
-        // Gear button
+        doneBtn = ChipButton(frame: NSRect(x: W - hPad - 68, y: headerY, width: 20, height: 20))
+        doneBtn.autoresizingMask = [.minXMargin, .minYMargin]
+        doneBtn.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Mark done")
+        doneBtn.contentTintColor = NSColor(white: 1, alpha: 0.82)
+        doneBtn.imageScaling = .scaleProportionallyDown
+        doneBtn.alphaValue = 0
+        doneBtn.target = self; doneBtn.action = #selector(markDone(_:))
+        content.addSubview(doneBtn)
+
         gearBtn = ChipButton(frame: NSRect(x: W - hPad - 44, y: headerY, width: 20, height: 20))
         gearBtn.autoresizingMask = [.minXMargin, .minYMargin]
         gearBtn.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")
         gearBtn.contentTintColor = NSColor(white: 1, alpha: 0.82)
         gearBtn.imageScaling = .scaleProportionallyDown
         gearBtn.alphaValue = 0
-        glass.addSubview(gearBtn)
+        gearBtn.target = self; gearBtn.action = #selector(showSettings(_:))
+        content.addSubview(gearBtn)
 
-        // Close button
         closeBtn = ChipButton(frame: NSRect(x: W - hPad - 20, y: headerY, width: 20, height: 20))
         closeBtn.autoresizingMask = [.minXMargin, .minYMargin]
         closeBtn.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Quit")
@@ -293,81 +521,191 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         closeBtn.imageScaling = .scaleProportionallyDown
         closeBtn.alphaValue = 0
         closeBtn.target = self; closeBtn.action = #selector(quit)
-        glass.addSubview(closeBtn)
+        content.addSubview(closeBtn)
 
-        // ── Digit + "left" row ────────────────────────────────────────────
         let digitY: CGFloat = 44
-
         digitLabel = lbl(size: 40, weight: .semibold, color: .white)
         digitLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
         digitLabel.stringValue = "--:--:--"
         digitLabel.frame = NSRect(x: hPad, y: digitY, width: W - hPad * 2 - 34, height: 50)
         digitLabel.autoresizingMask = [.width]
-        glass.addSubview(digitLabel)
+        content.addSubview(digitLabel)
 
         leftLabel = lbl(size: 12, weight: .medium, color: NSColor(white: 1, alpha: 0.62))
         leftLabel.stringValue = "left"
         leftLabel.frame = NSRect(x: W - hPad - 30, y: digitY + 6, width: 30, height: 16)
         leftLabel.autoresizingMask = [.minXMargin]
-        glass.addSubview(leftLabel)
+        content.addSubview(leftLabel)
 
-        // ── Progress bar ──────────────────────────────────────────────────
         progressBar = ProgressBarView(frame: NSRect(x: hPad, y: 34, width: W - hPad * 2, height: 5))
         progressBar.autoresizingMask = [.width]
-        glass.addSubview(progressBar)
+        content.addSubview(progressBar)
 
-        // ── Footer ────────────────────────────────────────────────────────
         footerLeft = lbl(size: 11, weight: .regular, color: NSColor(white: 1, alpha: 0.60))
         footerLeft.frame = NSRect(x: hPad, y: 14, width: 160, height: 14)
         footerLeft.autoresizingMask = [.width]
-        glass.addSubview(footerLeft)
+        content.addSubview(footerLeft)
 
         footerRight = lbl(size: 11, weight: .regular, color: NSColor(white: 1, alpha: 0.60))
         footerRight.alignment = .right
         footerRight.frame = NSRect(x: W - hPad - 50, y: 14, width: 50, height: 14)
         footerRight.autoresizingMask = [.minXMargin]
-        glass.addSubview(footerRight)
+        content.addSubview(footerRight)
 
-        // ── Resize grip ───────────────────────────────────────────────────
         resizeGrip = ResizeGrip(frame: NSRect(x: W - 18, y: 0, width: 18, height: 18))
         resizeGrip.autoresizingMask = [.minXMargin]
         resizeGrip.wantsLayer = true
         resizeGrip.alphaValue = 0
-        glass.addSubview(resizeGrip)
+        content.addSubview(resizeGrip)
 
         window.makeKeyAndOrderFront(nil)
         tick()
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
     }
 
-    func lbl(size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
-        let t = NSTextField(labelWithString: "")
+    func lbl(size: CGFloat, weight: NSFont.Weight, color: NSColor) -> PassthroughLabel {
+        let t = PassthroughLabel(labelWithString: "")
         t.font = NSFont.systemFont(ofSize: size, weight: weight)
         t.textColor = color
         t.alignment = .left
         t.lineBreakMode = .byTruncatingTail
         t.maximumNumberOfLines = 1
+        t.isBezeled = false; t.drawsBackground = false; t.isEditable = false; t.isSelectable = false
         return t
+    }
+
+    // MARK: Chrome visibility
+
+    var anyPopoverOpen: Bool {
+        (settingsPopover?.isShown ?? false) || (markDonePopover?.isShown ?? false)
+    }
+
+    func updateChromeVisibility() {
+        let visible = hovering || anyPopoverOpen
+        let hasEvent = currentEvent != nil
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            closeBtn.animator().alphaValue    = visible ? 1 : 0
+            gearBtn.animator().alphaValue     = visible ? 1 : 0
+            doneBtn.animator().alphaValue     = (visible && hasEvent) ? 1 : 0
+            resizeGrip.animator().alphaValue  = visible ? 1 : 0
+        }
+        doneBtn.isEnabled = hasEvent
+    }
+
+    // MARK: Settings popover
+
+    @objc func showSettings(_ sender: NSButton) {
+        if let p = settingsPopover, p.isShown {
+            p.performClose(nil); return
+        }
+        let p = NSPopover()
+        p.behavior = .transient
+        p.delegate = self
+        let vc = SettingsVC()
+        vc.onOpacityChange = { [weak self] v in
+            guard let self else { return }
+            self.glass.animator().alphaValue = v
+        }
+        vc.onUrgencyToggle = { [weak self] _ in self?.tick() }
+        p.contentViewController = vc
+        settingsPopover = p
+        updateChromeVisibility()
+        p.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    }
+
+    // MARK: Mark-done popover
+
+    @objc func markDone(_ sender: NSButton) {
+        if let p = markDonePopover, p.isShown {
+            p.performClose(nil); return
+        }
+        if let sp = settingsPopover, sp.isShown {
+            sp.performClose(nil)
+            settingsPopover = nil
+        }
+        guard let ev = currentEvent else { return }
+        let remaining = max(0, ev.endDate.timeIntervalSinceNow)
+
+        let p = NSPopover()
+        p.behavior = .semitransient
+        p.delegate = self
+        let vc = MarkDoneVC()
+        vc.eventTitle = ev.title ?? "Current event"
+        vc.remainingSeconds = remaining
+        vc.onStartNewTask = { [weak self] name in
+            self?.completeAndStartNew(title: name)
+        }
+        vc.onJustEnd = { [weak self] in
+            self?.completeCurrent()
+        }
+        vc.onCancel = { [weak self] in
+            self?.markDonePopover?.performClose(nil)
+        }
+        p.contentViewController = vc
+        markDonePopover = p
+        updateChromeVisibility()
+        p.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    }
+
+    func completeCurrent() {
+        guard let ev = currentEvent else { return }
+        ev.endDate = Date()
+        do { try store.save(ev, span: .thisEvent) }
+        catch { NSLog("Failed to save shortened event: \(error)") }
+        markDonePopover?.performClose(nil)
+        tick()
+    }
+
+    func completeAndStartNew(title: String) {
+        guard let ev = currentEvent else { return }
+        let originalEnd = ev.endDate
+        let now = Date()
+
+        ev.endDate = now
+        do { try store.save(ev, span: .thisEvent) }
+        catch { NSLog("Failed to save current: \(error)"); return }
+
+        let newEv = EKEvent(eventStore: store)
+        newEv.title = title
+        newEv.startDate = now
+        newEv.endDate = originalEnd
+        newEv.calendar = store.defaultCalendarForNewEvents ?? ev.calendar
+        do { try store.save(newEv, span: .thisEvent) }
+        catch { NSLog("Failed to save new event: \(error)") }
+
+        markDonePopover?.performClose(nil)
+        tick()
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        guard let p = notification.object as? NSPopover else { return }
+        if p === settingsPopover { settingsPopover = nil }
+        if p === markDonePopover { markDonePopover = nil }
+        let mouse = NSEvent.mouseLocation
+        hovering = window.frame.contains(mouse)
+        updateChromeVisibility()
     }
 
     // MARK: Tick
 
     func tick() {
         let now = Date()
-        // Start predicate from start-of-day to catch ongoing events
         let dayStart = Calendar.current.startOfDay(for: now)
         let pred = store.predicateForEvents(withStart: dayStart,
                                             end: Date(timeIntervalSinceNow: 86400),
                                             calendars: nil)
         let events = store.events(matching: pred)
+        let urgency = Settings.shared.urgencyEnabled
 
+        let prevHadEvent = currentEvent != nil
         if let ev = events.filter({ $0.startDate <= now && $0.endDate > now })
                           .sorted(by: { $0.endDate < $1.endDate }).first {
-            // ── Active event ──
+            currentEvent = ev
             let remaining = ev.endDate.timeIntervalSince(now)
             let total     = ev.endDate.timeIntervalSince(ev.startDate)
             let frac      = total > 0 ? max(0, min(1, remaining / total)) : 0
-            let color     = urgencyColor(frac: frac)
+            let color     = urgencyColor(frac: frac, enabled: urgency)
 
             dotView.color = color
             titleLabel.stringValue = ev.title ?? "Untitled"
@@ -380,26 +718,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             footerLeft.stringValue  = "ends \(tf.string(from: ev.endDate))"
             footerRight.stringValue = "\(Int(frac * 100))%"
 
-            frac <= 0.10 ? startPulse() : stopPulse()
+            if urgency && frac <= 0.10 {
+                glass.startPulse(color: color)
+            } else {
+                glass.stopPulse()
+            }
 
         } else if let nxt = events.filter({ $0.startDate > now })
                                   .sorted(by: { $0.startDate < $1.startDate }).first {
-            // ── Upcoming event ──
-            let wait  = nxt.startDate.timeIntervalSince(now)
-            let color = urgencyColor(frac: 1.0)
+            currentEvent = nil
+            let wait = nxt.startDate.timeIntervalSince(now)
             dotView.color = NSColor(white: 1, alpha: 0.35)
             titleLabel.stringValue = "Next: \(nxt.title ?? "Untitled")"
             digitLabel.stringValue = fmt(Int(wait))
             digitLabel.textColor   = NSColor(white: 1, alpha: 0.45)
             progressBar.fraction   = 0
-            progressBar.barColor   = color
+            progressBar.barColor   = urgencyColor(frac: 1.0, enabled: urgency)
             let tf = DateFormatter(); tf.dateFormat = "h:mm a"
             footerLeft.stringValue  = "starts \(tf.string(from: nxt.startDate))"
             footerRight.stringValue = "--"
-            stopPulse()
+            glass.stopPulse()
 
         } else {
-            // ── Idle ──
+            currentEvent = nil
             dotView.color = NSColor(white: 1, alpha: 0.25)
             titleLabel.stringValue  = "No upcoming events"
             digitLabel.stringValue  = "--:--:--"
@@ -407,38 +748,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             progressBar.fraction    = 0
             footerLeft.stringValue  = ""
             footerRight.stringValue = ""
-            stopPulse()
+            glass.stopPulse()
+        }
+
+        if prevHadEvent != (currentEvent != nil) {
+            updateChromeVisibility()
         }
     }
 
-    func fmt(_ secs: Int) -> String {
-        String(format: "%02d:%02d:%02d", secs / 3600, (secs % 3600) / 60, secs % 60)
-    }
-
-    // MARK: Pulse
-
-    func startPulse() {
-        guard pulseTimer == nil else { return }
-        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.pulsing.toggle()
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.6
-                self.window.animator().alphaValue = self.pulsing ? 0.72 : 0.98
-            }
-        }
-    }
-
-    func stopPulse() {
-        pulseTimer?.invalidate(); pulseTimer = nil
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.3
-            self.window.animator().alphaValue = 0.94
-        }
+    func fmt(_ s: Int) -> String {
+        String(format: "%02d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
     }
 
     @objc func quit() { NSApp.terminate(nil) }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 // MARK: - Entry point
