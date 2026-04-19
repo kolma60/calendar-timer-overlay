@@ -157,10 +157,11 @@ class ResizeGrip: NSView {
     private var ds: NSPoint?; private var fa: NSRect?
     override func draw(_ dirtyRect: NSRect) {
         let p = NSBezierPath()
+        // Lines anchored to bottom-right corner (correct resize-grip orientation)
         for i in 1...3 {
             let d = CGFloat(i) * 4.5
             p.move(to: NSPoint(x: bounds.width - 2, y: d))
-            p.line(to: NSPoint(x: d, y: bounds.height - 2))
+            p.line(to: NSPoint(x: bounds.width - d, y: 2))
         }
         p.lineWidth = 1.2; p.lineCapStyle = .round
         NSColor(white: 1, alpha: 0.30).setStroke(); p.stroke()
@@ -199,6 +200,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var footerLeft: NSTextField!
     var footerRight: NSTextField!
     var closeBtn: NSButton!
+    var gearBtn: NSButton!
+    var resizeGrip: ResizeGrip!
     var pulseTimer: Timer?
     var pulsing = false
 
@@ -251,7 +254,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.15
-                self.closeBtn.animator().alphaValue = h ? 1 : 0
+                self.closeBtn.animator().alphaValue   = h ? 1 : 0
+                self.gearBtn.animator().alphaValue    = h ? 1 : 0
+                self.resizeGrip.animator().alphaValue = h ? 1 : 0
             }
         }
         cv.addSubview(glass)
@@ -272,11 +277,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         glass.addSubview(titleLabel)
 
         // Gear button
-        let gearBtn = ChipButton(frame: NSRect(x: W - hPad - 44, y: headerY, width: 20, height: 20))
+        gearBtn = ChipButton(frame: NSRect(x: W - hPad - 44, y: headerY, width: 20, height: 20))
         gearBtn.autoresizingMask = [.minXMargin, .minYMargin]
         gearBtn.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")
         gearBtn.contentTintColor = NSColor(white: 1, alpha: 0.82)
         gearBtn.imageScaling = .scaleProportionallyDown
+        gearBtn.alphaValue = 0
         glass.addSubview(gearBtn)
 
         // Close button
@@ -323,9 +329,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         glass.addSubview(footerRight)
 
         // ── Resize grip ───────────────────────────────────────────────────
-        let grip = ResizeGrip(frame: NSRect(x: W - 18, y: 0, width: 18, height: 18))
-        grip.autoresizingMask = [.minXMargin]
-        glass.addSubview(grip)
+        resizeGrip = ResizeGrip(frame: NSRect(x: W - 18, y: 0, width: 18, height: 18))
+        resizeGrip.autoresizingMask = [.minXMargin]
+        resizeGrip.wantsLayer = true
+        resizeGrip.alphaValue = 0
+        glass.addSubview(resizeGrip)
 
         window.makeKeyAndOrderFront(nil)
         tick()
