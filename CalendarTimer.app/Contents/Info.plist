@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.local.CalendarTimer</string>
+    <key>CFBundleName</key>
+    <string>CalendarTimer</string>
+    <key>CFBundleExecutable</key>
+    <string>CalendarTimer</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSCalendarsUsageDescription</key>
+    <string>CalendarTimer needs calendar access to show your current event countdown.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>CalendarTimer needs calendar access to show your current event countdown.</string>
+</dict>
+</plist>

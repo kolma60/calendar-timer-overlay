@@ -1,3 +1,3 @@
 #!/bin/bash
 cd "$(dirname "$0")"
-./CalendarTimer
+swiftc CalendarTimer.swift -o CalendarTimer -framework Cocoa -framework EventKit && ./CalendarTimer
