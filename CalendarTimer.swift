@@ -1,5 +1,6 @@
 import Cocoa
 import EventKit
+import ServiceManagement
 
 // MARK: - Settings
 
@@ -403,7 +404,7 @@ class MarkDoneVC: NSViewController, NSTextFieldDelegate {
 
 // MARK: - App delegate
 
-class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate, NSMenuDelegate {
     var window: OverlayPanel!
     var glass: GlassView!
     var content: ContentHostView!
@@ -428,6 +429,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowD
     var store = EKEventStore()
     var ticker: Timer?
     var currentEvent: EKEvent?
+
+    var statusItem: NSStatusItem?
+    var toggleWindowItem: NSMenuItem!
+    var launchAtLoginItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ n: Notification) {
         if #available(macOS 14, *) {
@@ -524,7 +529,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowD
         closeBtn.contentTintColor = NSColor(white: 1, alpha: 0.82)
         closeBtn.imageScaling = .scaleProportionallyDown
         closeBtn.alphaValue = 0
-        closeBtn.target = self; closeBtn.action = #selector(quit)
+        closeBtn.target = self; closeBtn.action = #selector(toggleWindow(_:))
         content.addSubview(closeBtn)
 
         let digitY: CGFloat = 44
@@ -563,6 +568,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowD
         content.addSubview(resizeGrip)
 
         window.makeKeyAndOrderFront(nil)
+        setupStatusBar()
         relayout()
         tick()
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
@@ -838,6 +844,82 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowD
 
     func fmt(_ s: Int) -> String {
         String(format: "%02d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
+    }
+
+    // MARK: Menubar
+
+    func setupStatusBar() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let img = NSImage(systemSymbolName: "timer", accessibilityDescription: "Calendar Timer") {
+            img.isTemplate = true
+            item.button?.image = img
+        } else {
+            item.button?.title = "⏱"
+        }
+
+        let menu = NSMenu()
+        menu.delegate = self
+
+        toggleWindowItem = NSMenuItem(title: "Hide Timer",
+                                      action: #selector(toggleWindow(_:)), keyEquivalent: "")
+        toggleWindowItem.target = self
+        menu.addItem(toggleWindowItem)
+
+        menu.addItem(.separator())
+
+        launchAtLoginItem = NSMenuItem(title: "Launch at Login",
+                                       action: #selector(toggleLaunchAtLogin(_:)), keyEquivalent: "")
+        launchAtLoginItem.target = self
+        menu.addItem(launchAtLoginItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit Calendar Timer",
+                                  action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        item.menu = menu
+        statusItem = item
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        toggleWindowItem.title = (window?.isVisible ?? false) ? "Hide Timer" : "Show Timer"
+        if #available(macOS 13, *) {
+            launchAtLoginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+            launchAtLoginItem.isEnabled = true
+        } else {
+            launchAtLoginItem.isEnabled = false
+        }
+    }
+
+    @objc func toggleWindow(_ sender: Any?) {
+        guard let w = window else { return }
+        if w.isVisible {
+            settingsPopover?.performClose(nil)
+            markDonePopover?.performClose(nil)
+            w.orderOut(nil)
+        } else {
+            w.makeKeyAndOrderFront(nil)
+            relayout()
+        }
+    }
+
+    @objc func toggleLaunchAtLogin(_ sender: NSMenuItem) {
+        guard #available(macOS 13, *) else { return }
+        let svc = SMAppService.mainApp
+        do {
+            if svc.status == .enabled {
+                try svc.unregister()
+            } else {
+                try svc.register()
+            }
+        } catch {
+            let a = NSAlert()
+            a.messageText = "Could not change Launch at Login setting"
+            a.informativeText = "\(error.localizedDescription)\n\nMake sure Calendar Timer is in your /Applications folder."
+            a.runModal()
+        }
     }
 
     @objc func quit() { NSApp.terminate(nil) }

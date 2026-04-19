@@ -1,3 +1,4 @@
 #!/bin/bash
+# Quick dev run — builds the .app bundle and launches it
 cd "$(dirname "$0")"
-swiftc CalendarTimer.swift -o CalendarTimer -framework Cocoa -framework EventKit && ./CalendarTimer
+./build.sh && open "Calendar Timer.app"
