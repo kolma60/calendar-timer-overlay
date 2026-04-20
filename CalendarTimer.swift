@@ -6,8 +6,6 @@ import ServiceManagement
 
 class Settings {
     static let shared = Settings()
-    var bgOpacity: CGFloat = 0.94
-    var urgencyEnabled: Bool = true
     private let d = UserDefaults.standard
 
     // Keys
