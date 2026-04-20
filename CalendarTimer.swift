@@ -1,6 +1,7 @@
 import Cocoa
 import EventKit
 import ServiceManagement
+import UniformTypeIdentifiers
 
 // MARK: - Settings
 
@@ -16,14 +17,21 @@ class Settings {
     private let kCalm    = "calmColor"
     private let kMid     = "midColor"
     private let kHot     = "hotColor"
+    private let kText    = "textColor"
+    private let kAccent  = "accentColor"
+    private let kTrack   = "trackColor"
+    private let kBgImage = "backgroundImagePath"
 
     // Defaults
     static let dfOpacity: CGFloat = 0.94
     static let dfUrgent:  CGFloat = 0.25
     static let dfCrit:    CGFloat = 0.20
-    static let dfCalm = NSColor(red: 0.25, green: 0.75, blue: 0.46, alpha: 1)
-    static let dfMid  = NSColor(red: 0.88, green: 0.72, blue: 0.16, alpha: 1)
-    static let dfHot  = NSColor(red: 0.87, green: 0.36, blue: 0.25, alpha: 1)
+    static let dfCalm   = NSColor(red: 0.25, green: 0.75, blue: 0.46, alpha: 1)
+    static let dfMid    = NSColor(red: 0.88, green: 0.72, blue: 0.16, alpha: 1)
+    static let dfHot    = NSColor(red: 0.87, green: 0.36, blue: 0.25, alpha: 1)
+    static let dfText   = NSColor.white
+    static let dfAccent = NSColor(white: 1, alpha: 0.62)
+    static let dfTrack  = NSColor(white: 1, alpha: 0.14)
 
     var bgOpacity: CGFloat {
         get { (d.object(forKey: kOpacity) as? Double).map { CGFloat($0) } ?? Settings.dfOpacity }
@@ -53,6 +61,29 @@ class Settings {
         get { loadColor(kHot) ?? Settings.dfHot }
         set { saveColor(newValue, key: kHot) }
     }
+    var textColor: NSColor {
+        get { loadColor(kText) ?? Settings.dfText }
+        set { saveColor(newValue, key: kText) }
+    }
+    var accentColor: NSColor {
+        get { loadColor(kAccent) ?? Settings.dfAccent }
+        set { saveColor(newValue, key: kAccent) }
+    }
+    var trackColor: NSColor {
+        get { loadColor(kTrack) ?? Settings.dfTrack }
+        set { saveColor(newValue, key: kTrack) }
+    }
+    var backgroundImagePath: String? {
+        get { d.string(forKey: kBgImage) }
+        set {
+            if let v = newValue { d.set(v, forKey: kBgImage) }
+            else { d.removeObject(forKey: kBgImage) }
+        }
+    }
+    var backgroundImage: NSImage? {
+        guard let p = backgroundImagePath else { return nil }
+        return NSImage(contentsOfFile: p)
+    }
 
     func resetColorsAndThresholds() {
         d.removeObject(forKey: kUrgentT)
@@ -60,6 +91,9 @@ class Settings {
         d.removeObject(forKey: kCalm)
         d.removeObject(forKey: kMid)
         d.removeObject(forKey: kHot)
+        d.removeObject(forKey: kText)
+        d.removeObject(forKey: kAccent)
+        d.removeObject(forKey: kTrack)
     }
 
     private func loadColor(_ key: String) -> NSColor? {
@@ -115,10 +149,13 @@ class ProgressBarView: NSView {
     var barColor: NSColor = NSColor(red: 0.25, green: 0.75, blue: 0.46, alpha: 1) {
         didSet { needsDisplay = true }
     }
+    var trackColor: NSColor = NSColor(white: 1, alpha: 0.14) {
+        didSet { needsDisplay = true }
+    }
     override func draw(_ dirtyRect: NSRect) {
         let r = bounds.height / 2
         let track = NSBezierPath(roundedRect: bounds, xRadius: r, yRadius: r)
-        NSColor(white: 1, alpha: 0.14).setFill(); track.fill()
+        trackColor.setFill(); track.fill()
         NSColor(white: 0, alpha: 0.18).setStroke(); track.lineWidth = 0.5; track.stroke()
         let fw = max(0, bounds.width * fraction)
         if fw > 0 {
@@ -127,6 +164,37 @@ class ProgressBarView: NSView {
             barColor.setFill(); fillPath.fill()
         }
     }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+// MARK: - Background image view (user-supplied wallpaper for the widget)
+
+class BgImageView: NSView {
+    private let cr: CGFloat = 20
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius  = cr
+        layer?.cornerCurve   = .continuous
+        layer?.masksToBounds = true
+        layer?.contentsGravity = .resizeAspectFill
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    var image: NSImage? {
+        didSet { applyImage() }
+    }
+    private func applyImage() {
+        guard let layer = layer else { return }
+        if let img = image {
+            let scale = window?.backingScaleFactor ?? 2.0
+            layer.contents = img.layerContents(forContentsScale: scale)
+            layer.contentsScale = scale
+        } else {
+            layer.contents = nil
+        }
+    }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); applyImage() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
@@ -318,6 +386,7 @@ class SettingsVC: NSViewController {
     var onOpacityChange: ((CGFloat) -> Void)?
     var onUrgencyToggle: ((Bool) -> Void)?
     var onColorsChanged: (() -> Void)?
+    var onBgImageChanged: (() -> Void)?
 
     private let W: CGFloat = 300
     private let inset: CGFloat = 16
@@ -332,6 +401,11 @@ class SettingsVC: NSViewController {
     private var calmWell: NSColorWell!
     private var midWell: NSColorWell!
     private var hotWell: NSColorWell!
+    private var textWell: NSColorWell!
+    private var accentWell: NSColorWell!
+    private var trackWell: NSColorWell!
+    private var bgImageLabel: NSTextField!
+    private var clearBgBtn: NSButton!
     private var urgencyViews: [NSView] = []   // shown/hidden together
 
     override func loadView() {
@@ -358,7 +432,41 @@ class SettingsVC: NSViewController {
         opSlider.isContinuous = true
         opSlider.frame = NSRect(x: inset, y: y, width: sw, height: 22)
         v.addSubview(opSlider)
-        y += 22 + 12
+        y += 22 + 14
+
+        // ── Background image (always visible) ──────────────────────────
+        add(to: v, label: "Background image",
+            font: .systemFont(ofSize: 11, weight: .medium), color: .secondaryLabelColor,
+            x: inset, y: y, w: sw, h: 14)
+        y += 14 + 6
+
+        let chooseBtn = NSButton(title: "Choose image…",
+                                 target: self, action: #selector(chooseBgImage))
+        chooseBtn.bezelStyle = .rounded
+        chooseBtn.frame = NSRect(x: inset, y: y, width: 130, height: 24)
+        v.addSubview(chooseBtn)
+
+        clearBgBtn = NSButton(title: "Clear",
+                              target: self, action: #selector(clearBgImage))
+        clearBgBtn.bezelStyle = .rounded
+        clearBgBtn.frame = NSRect(x: W - inset - 60, y: y, width: 60, height: 24)
+        v.addSubview(clearBgBtn)
+        y += 24 + 4
+
+        bgImageLabel = NSTextField(labelWithString: "")
+        bgImageLabel.font = .systemFont(ofSize: 10)
+        bgImageLabel.textColor = .tertiaryLabelColor
+        bgImageLabel.lineBreakMode = .byTruncatingMiddle
+        bgImageLabel.maximumNumberOfLines = 1
+        bgImageLabel.isBezeled = false
+        bgImageLabel.drawsBackground = false
+        bgImageLabel.isEditable = false
+        bgImageLabel.isSelectable = false
+        bgImageLabel.frame = NSRect(x: inset, y: y, width: sw, height: 12)
+        v.addSubview(bgImageLabel)
+        y += 12 + 14
+        updateBgImageUI()
+
 
         // ── Urgency toggle ─────────────────────────────────────────────
         add(to: v, label: "Urgency colors & pulse",
@@ -378,6 +486,37 @@ class SettingsVC: NSViewController {
         // ── Separator ─────────────────────────────────────────────────
         urgencyViews.append(sep(in: v, x: inset, y: y, w: sw))
         y += 1 + 14
+
+        // ── Text colors (always visible) ───────────────────────────────
+        add(to: v, label: "Text colors",
+            font: .systemFont(ofSize: 11, weight: .medium), color: .secondaryLabelColor,
+            x: inset, y: y, w: sw, h: 14)
+        y += 14 + 10
+
+        let twW: CGFloat = 50, twH: CGFloat = 26
+        let tCol = sw / 3
+
+        textWell = makeWell(Settings.shared.textColor, #selector(textColorChanged(_:)))
+        textWell.frame = NSRect(x: inset + (tCol - twW)/2, y: y, width: twW, height: twH)
+        v.addSubview(textWell)
+
+        accentWell = makeWell(Settings.shared.accentColor, #selector(accentColorChanged(_:)))
+        accentWell.frame = NSRect(x: inset + tCol + (tCol - twW)/2, y: y, width: twW, height: twH)
+        v.addSubview(accentWell)
+
+        trackWell = makeWell(Settings.shared.trackColor, #selector(trackColorChanged(_:)))
+        trackWell.frame = NSRect(x: inset + tCol*2 + (tCol - twW)/2, y: y, width: twW, height: twH)
+        v.addSubview(trackWell)
+        y += twH + 4
+
+        for (i, text) in ["Text", "Accent", "Track"].enumerated() {
+            let l = NSTextField(labelWithString: text)
+            l.font = .systemFont(ofSize: 10); l.textColor = .tertiaryLabelColor
+            l.alignment = .center
+            l.frame = NSRect(x: inset + CGFloat(i) * tCol, y: y, width: tCol, height: 12)
+            v.addSubview(l)
+        }
+        y += 12 + 14
 
         // ── Urgent threshold ──────────────────────────────────────────
         urgencyViews.append(
@@ -553,6 +692,44 @@ class SettingsVC: NSViewController {
     @objc func midChanged(_ w: NSColorWell)  { Settings.shared.midColor  = w.color; onColorsChanged?() }
     @objc func hotChanged(_ w: NSColorWell)  { Settings.shared.hotColor  = w.color; onColorsChanged?() }
 
+    @objc func textColorChanged(_ w: NSColorWell)   { Settings.shared.textColor   = w.color; onColorsChanged?() }
+    @objc func accentColorChanged(_ w: NSColorWell) { Settings.shared.accentColor = w.color; onColorsChanged?() }
+    @objc func trackColorChanged(_ w: NSColorWell)  { Settings.shared.trackColor  = w.color; onColorsChanged?() }
+
+    @objc func chooseBgImage() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if #available(macOS 11, *) {
+            panel.allowedContentTypes = [.image]
+        } else {
+            panel.allowedFileTypes = ["png", "jpg", "jpeg", "heic", "tiff", "gif", "bmp"]
+        }
+        panel.begin { [weak self] resp in
+            guard resp == .OK, let url = panel.url else { return }
+            Settings.shared.backgroundImagePath = url.path
+            self?.updateBgImageUI()
+            self?.onBgImageChanged?()
+        }
+    }
+
+    @objc func clearBgImage() {
+        Settings.shared.backgroundImagePath = nil
+        updateBgImageUI()
+        onBgImageChanged?()
+    }
+
+    private func updateBgImageUI() {
+        if let p = Settings.shared.backgroundImagePath {
+            bgImageLabel.stringValue = (p as NSString).lastPathComponent
+            clearBgBtn.isEnabled = true
+        } else {
+            bgImageLabel.stringValue = "No image"
+            clearBgBtn.isEnabled = false
+        }
+    }
+
     @objc func resetTapped() {
         Settings.shared.resetColorsAndThresholds()
         urgentSlider.doubleValue = Double(Settings.dfUrgent) * 100
@@ -672,6 +849,7 @@ class MarkDoneVC: NSViewController, NSTextFieldDelegate {
 class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate, NSMenuDelegate {
     var window: OverlayPanel!
     var glass: GlassView!
+    var bgImage: BgImageView!
     var content: ContentHostView!
 
     var dotView: DotView!
@@ -747,7 +925,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowD
         glass.alphaValue = Settings.shared.bgOpacity
         cv.addSubview(glass)
 
-        // ── Layer 2: content host (all text/buttons, always opaque) ──
+        // ── Layer 2: background image (user wallpaper, opacity-controllable) ──
+        bgImage = BgImageView(frame: cv.bounds)
+        bgImage.autoresizingMask = [.width, .height]
+        bgImage.alphaValue = Settings.shared.bgOpacity
+        bgImage.image = Settings.shared.backgroundImage
+        cv.addSubview(bgImage)
+
+        // ── Layer 3: content host (all text/buttons, always opaque) ──
         content = ContentHostView(frame: cv.bounds)
         content.autoresizingMask = [.width, .height]
         content.wantsLayer = true
@@ -961,9 +1146,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowD
         vc.onOpacityChange = { [weak self] v in
             guard let self else { return }
             self.glass.animator().alphaValue = v
+            self.bgImage.animator().alphaValue = v
         }
         vc.onUrgencyToggle = { [weak self] _ in self?.tick() }
         vc.onColorsChanged = { [weak self] in self?.tick() }
+        vc.onBgImageChanged = { [weak self] in
+            self?.bgImage.image = Settings.shared.backgroundImage
+        }
         p.contentViewController = vc
         settingsPopover = p
         updateChromeVisibility()
@@ -1069,19 +1258,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowD
             let frac      = total > 0 ? max(0, min(1, remaining / total)) : 0
             let color     = urgencyColor(frac: frac, enabled: urgency)
 
+            let s = Settings.shared
             dotView.isHidden = false
             progressBar.isHidden = false
             dotView.color = color
             titleLabel.stringValue = ev.title ?? "Untitled"
+            titleLabel.textColor   = s.textColor
             digitLabel.stringValue = fmt(Int(remaining))
-            digitLabel.textColor   = .white
+            digitLabel.textColor   = s.textColor
             leftLabel.stringValue  = "left"
+            leftLabel.textColor    = s.accentColor
             progressBar.fraction   = CGFloat(frac)
             progressBar.barColor   = color
+            progressBar.trackColor = s.trackColor
 
             let tf = DateFormatter(); tf.dateFormat = "h:mm a"
             footerLeft.stringValue  = "ends \(tf.string(from: ev.endDate))"
+            footerLeft.textColor    = s.accentColor
             footerRight.stringValue = "\(Int(frac * 100))%"
+            footerRight.textColor   = s.accentColor
 
             if urgency && frac <= Double(Settings.shared.criticalThreshold) {
                 glass.startPulse(color: color)
@@ -1096,7 +1291,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowD
             progressBar.isHidden = true
             titleLabel.stringValue  = ""
             digitLabel.stringValue  = "Done!"
-            digitLabel.textColor    = NSColor(white: 1, alpha: 0.92)
+            digitLabel.textColor    = Settings.shared.textColor
             leftLabel.stringValue   = ""
             footerLeft.stringValue  = ""
             footerRight.stringValue = ""
