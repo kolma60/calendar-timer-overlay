@@ -8,6 +8,71 @@ class Settings {
     static let shared = Settings()
     var bgOpacity: CGFloat = 0.94
     var urgencyEnabled: Bool = true
+    private let d = UserDefaults.standard
+
+    // Keys
+    private let kOpacity = "bgOpacity"
+    private let kUrgency = "urgencyEnabled"
+    private let kUrgentT = "urgentThreshold"
+    private let kCritT   = "criticalThreshold"
+    private let kCalm    = "calmColor"
+    private let kMid     = "midColor"
+    private let kHot     = "hotColor"
+
+    // Defaults
+    static let dfOpacity: CGFloat = 0.94
+    static let dfUrgent:  CGFloat = 0.25
+    static let dfCrit:    CGFloat = 0.20
+    static let dfCalm = NSColor(red: 0.25, green: 0.75, blue: 0.46, alpha: 1)
+    static let dfMid  = NSColor(red: 0.88, green: 0.72, blue: 0.16, alpha: 1)
+    static let dfHot  = NSColor(red: 0.87, green: 0.36, blue: 0.25, alpha: 1)
+
+    var bgOpacity: CGFloat {
+        get { (d.object(forKey: kOpacity) as? Double).map { CGFloat($0) } ?? Settings.dfOpacity }
+        set { d.set(Double(newValue), forKey: kOpacity) }
+    }
+    var urgencyEnabled: Bool {
+        get { (d.object(forKey: kUrgency) as? Bool) ?? true }
+        set { d.set(newValue, forKey: kUrgency) }
+    }
+    var urgentThreshold: CGFloat {
+        get { (d.object(forKey: kUrgentT) as? Double).map { CGFloat($0) } ?? Settings.dfUrgent }
+        set { d.set(Double(newValue), forKey: kUrgentT) }
+    }
+    var criticalThreshold: CGFloat {
+        get { (d.object(forKey: kCritT) as? Double).map { CGFloat($0) } ?? Settings.dfCrit }
+        set { d.set(Double(newValue), forKey: kCritT) }
+    }
+    var calmColor: NSColor {
+        get { loadColor(kCalm) ?? Settings.dfCalm }
+        set { saveColor(newValue, key: kCalm) }
+    }
+    var midColor: NSColor {
+        get { loadColor(kMid) ?? Settings.dfMid }
+        set { saveColor(newValue, key: kMid) }
+    }
+    var hotColor: NSColor {
+        get { loadColor(kHot) ?? Settings.dfHot }
+        set { saveColor(newValue, key: kHot) }
+    }
+
+    func resetColorsAndThresholds() {
+        d.removeObject(forKey: kUrgentT)
+        d.removeObject(forKey: kCritT)
+        d.removeObject(forKey: kCalm)
+        d.removeObject(forKey: kMid)
+        d.removeObject(forKey: kHot)
+    }
+
+    private func loadColor(_ key: String) -> NSColor? {
+        guard let a = d.array(forKey: key) as? [Double], a.count == 4 else { return nil }
+        return NSColor(srgbRed: a[0], green: a[1], blue: a[2], alpha: a[3])
+    }
+    private func saveColor(_ c: NSColor, key: String) {
+        let rgb = c.usingColorSpace(.sRGB) ?? c
+        d.set([Double(rgb.redComponent), Double(rgb.greenComponent),
+               Double(rgb.blueComponent), Double(rgb.alphaComponent)], forKey: key)
+    }
 }
 
 // MARK: - Colors
@@ -16,9 +81,10 @@ let neutralAccent = NSColor(white: 1.0, alpha: 0.55)
 
 func urgencyColor(frac: Double, enabled: Bool) -> NSColor {
     if !enabled { return neutralAccent }
-    if frac > 0.25 { return NSColor(red: 0.25, green: 0.75, blue: 0.46, alpha: 1) }
-    if frac > 0.10 { return NSColor(red: 0.88, green: 0.72, blue: 0.16, alpha: 1) }
-    return NSColor(red: 0.87, green: 0.36, blue: 0.25, alpha: 1)
+    let s = Settings.shared
+    if frac > Double(s.urgentThreshold)   { return s.calmColor }
+    if frac > Double(s.criticalThreshold) { return s.midColor }
+    return s.hotColor
 }
 
 // MARK: - Passthrough label (doesn't intercept mouse — drag works over text)
@@ -248,52 +314,223 @@ class OverlayPanel: NSPanel {
 class SettingsVC: NSViewController {
     var onOpacityChange: ((CGFloat) -> Void)?
     var onUrgencyToggle: ((Bool) -> Void)?
+    var onColorsChanged: (() -> Void)?
+
+    private var urgencySwitch: NSSwitch!
+    private var urgentSlider: NSSlider!
+    private var urgentValueLbl: NSTextField!
+    private var critSlider: NSSlider!
+    private var critValueLbl: NSTextField!
+    private var calmWell: NSColorWell!
+    private var midWell: NSColorWell!
+    private var hotWell: NSColorWell!
 
     override func loadView() {
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 140))
+        let W: CGFloat = 300
+        let H: CGFloat = 380
+        let inset: CGFloat = 16
+        let sw = W - inset * 2
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: W, height: H))
 
+        // Title
         let title = NSTextField(labelWithString: "Timer settings")
         title.font = .systemFont(ofSize: 13, weight: .semibold)
-        title.frame = NSRect(x: 16, y: 108, width: 228, height: 20)
+        title.frame = NSRect(x: inset, y: H - 30, width: sw, height: 18)
         v.addSubview(title)
 
+        // Background opacity
         let opLbl = NSTextField(labelWithString: "Background opacity")
         opLbl.font = .systemFont(ofSize: 11, weight: .medium)
         opLbl.textColor = .secondaryLabelColor
-        opLbl.frame = NSRect(x: 16, y: 82, width: 228, height: 14)
+        opLbl.frame = NSRect(x: inset, y: H - 56, width: sw, height: 14)
         v.addSubview(opLbl)
 
-        let slider = NSSlider(value: Double(Settings.shared.bgOpacity),
-                              minValue: 0.3, maxValue: 1.0,
-                              target: self, action: #selector(sliderChanged(_:)))
-        slider.isContinuous = true
-        slider.frame = NSRect(x: 16, y: 56, width: 228, height: 22)
-        v.addSubview(slider)
+        let opSlider = NSSlider(value: Double(Settings.shared.bgOpacity),
+                                minValue: 0.3, maxValue: 1.0,
+                                target: self, action: #selector(opacityChanged(_:)))
+        opSlider.isContinuous = true
+        opSlider.frame = NSRect(x: inset, y: H - 82, width: sw, height: 22)
+        v.addSubview(opSlider)
 
-        let toggleLbl = NSTextField(labelWithString: "Urgency colors & pulse")
-        toggleLbl.font = .systemFont(ofSize: 12, weight: .regular)
-        toggleLbl.frame = NSRect(x: 16, y: 20, width: 170, height: 18)
-        v.addSubview(toggleLbl)
+        // Urgency toggle
+        let togLbl = NSTextField(labelWithString: "Urgency colors & pulse")
+        togLbl.font = .systemFont(ofSize: 12)
+        togLbl.frame = NSRect(x: inset, y: H - 114, width: sw - 50, height: 18)
+        v.addSubview(togLbl)
 
-        let sw = NSSwitch()
-        sw.state = Settings.shared.urgencyEnabled ? .on : .off
-        sw.target = self; sw.action = #selector(toggleChanged(_:))
-        sw.frame = NSRect(x: 200, y: 16, width: 44, height: 24)
-        v.addSubview(sw)
+        urgencySwitch = NSSwitch()
+        urgencySwitch.state = Settings.shared.urgencyEnabled ? .on : .off
+        urgencySwitch.target = self
+        urgencySwitch.action = #selector(urgencyToggle(_:))
+        urgencySwitch.frame = NSRect(x: W - inset - 40, y: H - 118, width: 40, height: 24)
+        v.addSubview(urgencySwitch)
+
+        // Separator
+        addSeparator(to: v, y: H - 140, width: sw, inset: inset)
+
+        // Urgent threshold
+        let urgLbl = NSTextField(labelWithString: "Urgent color starts below")
+        urgLbl.font = .systemFont(ofSize: 11, weight: .medium)
+        urgLbl.textColor = .secondaryLabelColor
+        urgLbl.frame = NSRect(x: inset, y: H - 164, width: sw - 50, height: 14)
+        v.addSubview(urgLbl)
+
+        urgentValueLbl = NSTextField(labelWithString: "")
+        urgentValueLbl.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        urgentValueLbl.textColor = .secondaryLabelColor
+        urgentValueLbl.alignment = .right
+        urgentValueLbl.frame = NSRect(x: W - inset - 48, y: H - 164, width: 48, height: 14)
+        v.addSubview(urgentValueLbl)
+
+        urgentSlider = NSSlider(value: Double(Settings.shared.urgentThreshold) * 100,
+                                minValue: 5, maxValue: 75,
+                                target: self, action: #selector(urgentChanged(_:)))
+        urgentSlider.isContinuous = true
+        urgentSlider.frame = NSRect(x: inset, y: H - 186, width: sw, height: 22)
+        v.addSubview(urgentSlider)
+
+        // Critical threshold
+        let crLbl = NSTextField(labelWithString: "Critical + pulse starts below")
+        crLbl.font = .systemFont(ofSize: 11, weight: .medium)
+        crLbl.textColor = .secondaryLabelColor
+        crLbl.frame = NSRect(x: inset, y: H - 214, width: sw - 50, height: 14)
+        v.addSubview(crLbl)
+
+        critValueLbl = NSTextField(labelWithString: "")
+        critValueLbl.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        critValueLbl.textColor = .secondaryLabelColor
+        critValueLbl.alignment = .right
+        critValueLbl.frame = NSRect(x: W - inset - 48, y: H - 214, width: 48, height: 14)
+        v.addSubview(critValueLbl)
+
+        critSlider = NSSlider(value: Double(Settings.shared.criticalThreshold) * 100,
+                              minValue: 0, maxValue: 50,
+                              target: self, action: #selector(critChanged(_:)))
+        critSlider.isContinuous = true
+        critSlider.frame = NSRect(x: inset, y: H - 236, width: sw, height: 22)
+        v.addSubview(critSlider)
+
+        updateThresholdLabels()
+
+        // Separator
+        addSeparator(to: v, y: H - 256, width: sw, inset: inset)
+
+        // Colors section
+        let colLbl = NSTextField(labelWithString: "Colors")
+        colLbl.font = .systemFont(ofSize: 11, weight: .medium)
+        colLbl.textColor = .secondaryLabelColor
+        colLbl.frame = NSRect(x: inset, y: H - 278, width: sw, height: 14)
+        v.addSubview(colLbl)
+
+        // Three color wells with labels
+        let wellW: CGFloat = 50, wellH: CGFloat = 26
+        let wellY: CGFloat = H - 318
+        let labelY: CGFloat = wellY - 16
+        let colW = sw / 3
+
+        calmWell = makeWell(color: Settings.shared.calmColor, action: #selector(calmChanged(_:)))
+        calmWell.frame = NSRect(x: inset + (colW - wellW)/2, y: wellY, width: wellW, height: wellH)
+        v.addSubview(calmWell)
+        addColorLabel(to: v, text: "Calm", x: inset, width: colW, y: labelY)
+
+        midWell = makeWell(color: Settings.shared.midColor, action: #selector(midChanged(_:)))
+        midWell.frame = NSRect(x: inset + colW + (colW - wellW)/2, y: wellY, width: wellW, height: wellH)
+        v.addSubview(midWell)
+        addColorLabel(to: v, text: "Urgent", x: inset + colW, width: colW, y: labelY)
+
+        hotWell = makeWell(color: Settings.shared.hotColor, action: #selector(hotChanged(_:)))
+        hotWell.frame = NSRect(x: inset + colW * 2 + (colW - wellW)/2, y: wellY, width: wellW, height: wellH)
+        v.addSubview(hotWell)
+        addColorLabel(to: v, text: "Critical", x: inset + colW * 2, width: colW, y: labelY)
+
+        // Reset button
+        let reset = NSButton(title: "Reset thresholds & colors",
+                             target: self, action: #selector(resetTapped))
+        reset.bezelStyle = .rounded
+        reset.frame = NSRect(x: inset, y: 14, width: sw, height: 26)
+        v.addSubview(reset)
 
         self.view = v
     }
 
-    @objc func sliderChanged(_ sender: NSSlider) {
-        let x = CGFloat(sender.doubleValue)
-        Settings.shared.bgOpacity = x
-        onOpacityChange?(x)
+    // Helpers
+    private func addSeparator(to v: NSView, y: CGFloat, width: CGFloat, inset: CGFloat) {
+        let sep = NSBox(frame: NSRect(x: inset, y: y, width: width, height: 1))
+        sep.boxType = .separator
+        v.addSubview(sep)
+    }
+    private func addColorLabel(to v: NSView, text: String, x: CGFloat, width: CGFloat, y: CGFloat) {
+        let l = NSTextField(labelWithString: text)
+        l.font = .systemFont(ofSize: 10)
+        l.textColor = .tertiaryLabelColor
+        l.alignment = .center
+        l.frame = NSRect(x: x, y: y, width: width, height: 12)
+        v.addSubview(l)
+    }
+    private func makeWell(color: NSColor, action: Selector) -> NSColorWell {
+        let w = NSColorWell()
+        w.color = color
+        w.target = self
+        w.action = action
+        return w
+    }
+    private func updateThresholdLabels() {
+        urgentValueLbl.stringValue = "\(Int(urgentSlider.doubleValue))%"
+        critValueLbl.stringValue   = "\(Int(critSlider.doubleValue))%"
     }
 
-    @objc func toggleChanged(_ sender: NSSwitch) {
-        let on = sender.state == .on
+    // Actions
+    @objc func opacityChanged(_ s: NSSlider) {
+        let v = CGFloat(s.doubleValue)
+        Settings.shared.bgOpacity = v
+        onOpacityChange?(v)
+    }
+    @objc func urgencyToggle(_ s: NSSwitch) {
+        let on = s.state == .on
         Settings.shared.urgencyEnabled = on
         onUrgencyToggle?(on)
+    }
+    @objc func urgentChanged(_ s: NSSlider) {
+        let v = s.doubleValue
+        if v < critSlider.doubleValue {
+            critSlider.doubleValue = v
+            Settings.shared.criticalThreshold = CGFloat(v / 100)
+        }
+        Settings.shared.urgentThreshold = CGFloat(v / 100)
+        updateThresholdLabels()
+        onColorsChanged?()
+    }
+    @objc func critChanged(_ s: NSSlider) {
+        let v = s.doubleValue
+        if v > urgentSlider.doubleValue {
+            urgentSlider.doubleValue = v
+            Settings.shared.urgentThreshold = CGFloat(v / 100)
+        }
+        Settings.shared.criticalThreshold = CGFloat(v / 100)
+        updateThresholdLabels()
+        onColorsChanged?()
+    }
+    @objc func calmChanged(_ w: NSColorWell) {
+        Settings.shared.calmColor = w.color
+        onColorsChanged?()
+    }
+    @objc func midChanged(_ w: NSColorWell) {
+        Settings.shared.midColor = w.color
+        onColorsChanged?()
+    }
+    @objc func hotChanged(_ w: NSColorWell) {
+        Settings.shared.hotColor = w.color
+        onColorsChanged?()
+    }
+    @objc func resetTapped() {
+        Settings.shared.resetColorsAndThresholds()
+        urgentSlider.doubleValue = Double(Settings.dfUrgent) * 100
+        critSlider.doubleValue   = Double(Settings.dfCrit) * 100
+        calmWell.color = Settings.dfCalm
+        midWell.color  = Settings.dfMid
+        hotWell.color  = Settings.dfHot
+        updateThresholdLabels()
+        onColorsChanged?()
     }
 }
 
@@ -698,6 +935,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowD
             self.glass.animator().alphaValue = v
         }
         vc.onUrgencyToggle = { [weak self] _ in self?.tick() }
+        vc.onColorsChanged = { [weak self] in self?.tick() }
         p.contentViewController = vc
         settingsPopover = p
         updateChromeVisibility()
@@ -817,7 +1055,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowD
             footerLeft.stringValue  = "ends \(tf.string(from: ev.endDate))"
             footerRight.stringValue = "\(Int(frac * 100))%"
 
-            if urgency && frac <= 0.10 {
+            if urgency && frac <= Double(Settings.shared.criticalThreshold) {
                 glass.startPulse(color: color)
             } else {
                 glass.stopPulse()
