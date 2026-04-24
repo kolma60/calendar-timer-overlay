@@ -24,6 +24,8 @@ final class WidgetManager {
 
     private var overlayWindow: NSWindow?
     private var centerPanel: NSPanel?
+    private var centerMenuPopover: NSPopover?
+    private var panelObservers: [ObjectIdentifier: WindowMoveObserver] = [:]
     private var positionTimer: Timer?
 
     // MARK: - Init
@@ -85,6 +87,7 @@ final class WidgetManager {
     // MARK: - Widget panel factory
 
     private func makeWidgetPanel(id: UUID, type: WidgetType) -> NSPanel {
+        let state = WidgetViewState()
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: type.defaultSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -98,9 +101,19 @@ final class WidgetManager {
         panel.isOpaque                 = false
         panel.hasShadow                = true
         panel.collectionBehavior       = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentView = NSHostingView(rootView: WidgetView(type: type) { [weak self] in
-            self?.removeWidget(id: id)
-        })
+        panel.delegate = makeMoveObserver(for: panel)
+        panel.contentView = WidgetHostingView(
+            rootView: WidgetView(
+                type: type,
+                onClose: { [weak self] in
+                    self?.removeWidget(id: id)
+                },
+                state: state
+            ),
+            rightClickHandler: {
+            state.showingSettings = true
+            }
+        )
         return panel
     }
 
@@ -136,7 +149,10 @@ final class WidgetManager {
         cp.isOpaque                 = false
         cp.hasShadow                = true
         cp.collectionBehavior       = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        cp.contentView = NSHostingView(rootView: CenterPointView())
+        cp.delegate                 = makeMoveObserver(for: cp)
+        cp.contentView = CenterPointHostingView(rootView: CenterPointView()) { [weak self] location, hostingView in
+            self?.toggleCenterMenu(at: location, in: hostingView)
+        }
         cp.makeKeyAndOrderFront(nil)
         centerPanel = cp
     }
@@ -144,20 +160,25 @@ final class WidgetManager {
     private func tearDownOverlay() {
         positionTimer?.invalidate()
         positionTimer = nil
+        centerMenuPopover?.close()
+        centerMenuPopover = nil
         overlayWindow?.close()
         overlayWindow = nil
         centerPanel?.close()
         centerPanel = nil
+        panelObservers = [:]
         widgetPositions = [:]
     }
 
-    // MARK: - 30 fps position tracking
+    // MARK: - 60 fps position tracking
 
     private func startTracking() {
         guard positionTimer == nil else { return }
-        positionTimer = Timer.scheduledTimer(withTimeInterval: 1.0/30, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
             self?.syncPositions()
         }
+        RunLoop.main.add(timer, forMode: .common)
+        positionTimer = timer
     }
 
     private func syncPositions() {
@@ -188,5 +209,97 @@ final class WidgetManager {
         } else {
             rootSystem.tickAnimations()
         }
+    }
+
+    private func toggleCenterMenu(at location: CGPoint, in hostingView: NSView) {
+        if let popover = centerMenuPopover, popover.isShown {
+            popover.close()
+            return
+        }
+
+        let popover = centerMenuPopover ?? {
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.contentSize = NSSize(width: 240, height: 420)
+            popover.contentViewController = NSHostingController(rootView: ContentView())
+            centerMenuPopover = popover
+            return popover
+        }()
+
+        let anchorRect = NSRect(origin: location, size: NSSize(width: 1, height: 1))
+        popover.show(relativeTo: anchorRect, of: hostingView, preferredEdge: .maxY)
+    }
+
+    private func makeMoveObserver(for window: NSWindow) -> WindowMoveObserver {
+        let key = ObjectIdentifier(window)
+        if let existing = panelObservers[key] {
+            return existing
+        }
+
+        let observer = WindowMoveObserver { [weak self] in
+            self?.syncPositions()
+        }
+        panelObservers[key] = observer
+        return observer
+    }
+}
+
+private final class CenterPointHostingView<Content: View>: NSHostingView<Content> {
+    private let rightClickHandler: (CGPoint, NSView) -> Void
+
+    init(rootView: Content, rightClickHandler: @escaping (CGPoint, NSView) -> Void) {
+        self.rightClickHandler = rightClickHandler
+        super.init(rootView: rootView)
+    }
+
+    @available(*, unavailable)
+    required init(rootView: Content) {
+        fatalError("init(rootView:) has not been implemented")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let location = convert(event.locationInWindow, from: nil)
+        rightClickHandler(location, self)
+    }
+}
+
+private final class WidgetHostingView<Content: View>: NSHostingView<Content> {
+    private let rightClickHandler: () -> Void
+
+    init(rootView: Content, rightClickHandler: @escaping () -> Void) {
+        self.rightClickHandler = rightClickHandler
+        super.init(rootView: rootView)
+    }
+
+    @available(*, unavailable)
+    required init(rootView: Content) {
+        fatalError("init(rootView:) has not been implemented")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        super.rightMouseDown(with: event)
+        rightClickHandler()
+    }
+}
+
+private final class WindowMoveObserver: NSObject, NSWindowDelegate {
+    private let onMove: () -> Void
+
+    init(onMove: @escaping () -> Void) {
+        self.onMove = onMove
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        onMove()
     }
 }

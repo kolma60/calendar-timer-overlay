@@ -11,6 +11,7 @@ import SwiftUI
 struct WidgetView: View {
     let type: WidgetType
     let onClose: () -> Void
+    @Bindable var state: WidgetViewState
 
     var body: some View {
         Group {
@@ -32,6 +33,7 @@ struct WidgetView: View {
                             RoundedRectangle(cornerRadius: 16)
                                 .strokeBorder(.white.opacity(0.12), lineWidth: 1)
                         )
+                        .opacity(state.panelOpacity)
 
                     VStack(spacing: 0) {
                         // Drag handle / header
@@ -53,6 +55,13 @@ struct WidgetView: View {
                             .padding(14)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                }
+                .popover(isPresented: $state.showingSettings, arrowEdge: .top) {
+                    WidgetQuickSettingsPanel(
+                        type: type,
+                        panelOpacity: $state.panelOpacity,
+                        onClose: onClose
+                    )
                 }
             }
         }
@@ -81,9 +90,15 @@ struct WidgetView: View {
             WidgetPlaceholder(icon: type.icon, label: "Calendar coming soon")
 
         case .calendarTimer:
-            CalendarTimerWidget()
+            CalendarTimerWidget(showingSettings: $state.showingSettings)
         }
     }
+}
+
+@Observable
+final class WidgetViewState {
+    var showingSettings = false
+    var panelOpacity = 1.0
 }
 
 // MARK: - Reusable placeholder (remove per widget when implementing the real thing)
@@ -103,6 +118,47 @@ private struct WidgetPlaceholder: View {
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct WidgetQuickSettingsPanel: View {
+    let type: WidgetType
+    @Binding var panelOpacity: Double
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("\(type.title) settings")
+                .font(.system(size: 13, weight: .semibold))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Background transparency")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                Slider(value: $panelOpacity, in: 0.2...1.0)
+
+                Text("\(Int((panelOpacity * 100).rounded()))% visible")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("Reset transparency") {
+                panelOpacity = 1.0
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Divider()
+
+            Button("Close widget", role: .destructive) {
+                onClose()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(14)
+        .frame(width: 240)
     }
 }
 

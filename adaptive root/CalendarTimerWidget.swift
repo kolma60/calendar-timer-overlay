@@ -10,9 +10,13 @@ import UniformTypeIdentifiers
 
 struct CalendarTimerWidget: View {
     @State private var model = CalendarTimerModel()
-    @State private var showingSettings = false
     @State private var showingMarkDone = false
     @State private var pulsePhase = false
+    @Binding private var showingSettings: Bool
+
+    init(showingSettings: Binding<Bool> = .constant(false)) {
+        _showingSettings = showingSettings
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -56,6 +60,11 @@ struct CalendarTimerWidget: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
+        .popover(isPresented: $showingSettings, arrowEdge: .top) {
+            CalendarTimerSettingsPanel(onChanged: {
+                Task { await model.refresh() }
+            })
+        }
         .task {
             pulsePhase = true
             await model.activate()
@@ -81,9 +90,6 @@ struct CalendarTimerWidget: View {
             if display.hasActiveEvent {
                 markDoneButton(display: display)
             }
-
-            settingsButton
-                .padding(.trailing, 28)
         }
         .frame(height: 20)
     }
@@ -163,31 +169,6 @@ struct CalendarTimerWidget: View {
                     .lineLimit(1)
             }
             .frame(height: 14)
-        }
-    }
-
-    private var settingsButton: some View {
-        Button {
-            showingSettings.toggle()
-        } label: {
-            Image(systemName: "gearshape")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color(nsColor: CalendarTimerSettings.shared.textColor).opacity(0.82))
-                .frame(width: 20, height: 20)
-                .background(
-                    Circle()
-                        .fill(Color.white.opacity(0.08))
-                        .overlay(
-                            Circle()
-                                .stroke(Color.white.opacity(0.14), lineWidth: 1)
-                        )
-                )
-        }
-        .buttonStyle(.plain)
-        .popover(isPresented: $showingSettings, arrowEdge: .top) {
-            CalendarTimerSettingsPanel(onChanged: {
-                Task { await model.refresh() }
-            })
         }
     }
 
@@ -834,15 +815,15 @@ final class CalendarTimerModel {
     }
 
     func snapshot(at date: Date) -> Snapshot {
-        guard case .active(let event) = snapshotState else {
+        switch snapshotState {
+        case .loading, .permissionRequired, .denied:
             return snapshotState
-        }
-
-        if event.endDate <= date {
+        case .idle, .active:
+            if let activeEvent = activeEvent(at: date) {
+                return .active(activeEvent)
+            }
             return .idle
         }
-
-        return .active(event)
     }
 
     func requestAccess() async {
@@ -875,33 +856,12 @@ final class CalendarTimerModel {
             return
         }
 
-        let now = Date()
-        let dayStart = Calendar.current.startOfDay(for: now)
-        let dayEnd = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? now.addingTimeInterval(86_400)
-        let predicate = store.predicateForEvents(withStart: dayStart, end: dayEnd, calendars: nil)
-        let maxDuration: TimeInterval = 10 * 60 * 60
-
-        let currentEvent = store.events(matching: predicate)
-            .filter {
-                $0.startDate <= now &&
-                $0.endDate > now &&
-                $0.endDate.timeIntervalSince($0.startDate) <= maxDuration
-            }
-            .sorted { $0.endDate < $1.endDate }
-            .first
-
-        guard let event = currentEvent else {
+        guard let activeEvent = activeEvent(at: Date()) else {
             snapshotState = .idle
             return
         }
 
-        snapshotState = .active(
-            ActiveEvent(
-                title: event.title?.isEmpty == false ? event.title! : "Untitled",
-                endDate: event.endDate,
-                totalDuration: event.endDate.timeIntervalSince(event.startDate)
-            )
-        )
+        snapshotState = .active(activeEvent)
     }
 
     func completeCurrent() async {
@@ -944,19 +904,31 @@ final class CalendarTimerModel {
     }
 
     private func currentEvent() -> EKEvent? {
-        let now = Date()
-        let dayStart = Calendar.current.startOfDay(for: now)
-        let dayEnd = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? now.addingTimeInterval(86_400)
+        currentEvent(at: Date())
+    }
+
+    private func currentEvent(at date: Date) -> EKEvent? {
+        let dayStart = Calendar.current.startOfDay(for: date)
+        let dayEnd = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) ?? date.addingTimeInterval(86_400)
         let predicate = store.predicateForEvents(withStart: dayStart, end: dayEnd, calendars: nil)
         let maxDuration: TimeInterval = 10 * 60 * 60
 
         return store.events(matching: predicate)
             .filter {
-                $0.startDate <= now &&
-                $0.endDate > now &&
+                $0.startDate <= date &&
+                $0.endDate > date &&
                 $0.endDate.timeIntervalSince($0.startDate) <= maxDuration
             }
             .sorted { $0.endDate < $1.endDate }
             .first
+    }
+
+    private func activeEvent(at date: Date) -> ActiveEvent? {
+        guard let event = currentEvent(at: date) else { return nil }
+        return ActiveEvent(
+            title: event.title?.isEmpty == false ? event.title! : "Untitled",
+            endDate: event.endDate,
+            totalDuration: event.endDate.timeIntervalSince(event.startDate)
+        )
     }
 }
